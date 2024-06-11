@@ -275,6 +275,11 @@ class DoatPlugin(plugins.SingletonPlugin, DefaultTranslation, toolkit.DefaultDat
             ckan_icon='file',
             controller='ckanext.doat.controllers.popup:PopupController'
         )
+        map.connect(
+            '/dataset/{id}', 
+            action='read',
+            controller='ckanext.doat.controllers.dataset:DatasetManageController',
+        )
         return map
     
     
@@ -291,7 +296,7 @@ class DoatPlugin(plugins.SingletonPlugin, DefaultTranslation, toolkit.DefaultDat
         }
         return auth_functions
 
-# IActionFunctions
+    # IActionFunctions
     def get_actions(self):
         action_functions = {
             'bulk_update_public': opend_action.bulk_update_public,

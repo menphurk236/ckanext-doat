@@ -14,6 +14,8 @@ import datetime
 
 import uuid
 import ckan.plugins.toolkit as toolkit
+import ckan.lib.base as base
+from ckan.lib.plugins import lookup_package_plugin
 
 from ckan.plugins.toolkit import (
     _, c, h, check_access, abort, render, request
@@ -21,6 +23,8 @@ from ckan.plugins.toolkit import (
 
 from ckan.controllers.home import CACHE_PARAMETERS
 import ckan.logic.schema as schema_
+from ckan.lib.render import TemplateNotFound
+from ckan.common import _, config, g, request
 
 import sys
 reload(sys)
@@ -30,10 +34,129 @@ _validate = dict_fns.validate
 ValidationError = logic.ValidationError
 NotFound = logic.NotFound
 NotAuthorized = logic.NotAuthorized
+get_action = logic.get_action
 
 log = logging.getLogger(__name__)
 
+def _setup_template_variables(context, data_dict, package_type=None):
+    return lookup_package_plugin(package_type).setup_template_variables(
+        context, data_dict
+    )
+
+
+def _get_pkg_template(template_type, package_type=None):
+    pkg_plugin = lookup_package_plugin(package_type)
+    method = getattr(pkg_plugin, template_type)
+    try:
+        return method(package_type)
+    except TypeError as err:
+        if u'takes 1' not in str(err) and u'takes exactly 1' not in str(err):
+            raise
+        return method()
+
 class DatasetManageController(p.toolkit.BaseController):
+
+    def read(package_type, id):
+        context = {
+            u'model': model,
+            u'session': model.Session,
+            u'user': g.user,
+            u'for_view': True,
+            u'auth_user_obj': g.userobj
+        }
+        data_dict = {u'id': id, u'include_tracking': True}
+        activity_id = request.params.get(u'activity_id')
+
+        # check if package exists
+        try:
+            pkg_dict = get_action(u'package_show')(context, data_dict)
+            pkg = context[u'package']
+        except (NotFound, NotAuthorized):
+            return base.abort(404, _(u'Dataset not found'))
+
+        g.pkg_dict = pkg_dict
+        g.pkg = pkg
+        # NB templates should not use g.pkg, because it takes no account of
+        # activity_id
+
+        if activity_id:
+            # view an 'old' version of the package, as recorded in the
+            # activity stream
+            try:
+                activity = get_action(u'activity_show')(
+                    context, {u'id': activity_id, u'include_data': True})
+            except NotFound:
+                base.abort(404, _(u'Activity not found'))
+            except NotAuthorized:
+                base.abort(403, _(u'Unauthorized to view activity data'))
+            current_pkg = pkg_dict
+            try:
+                pkg_dict = activity[u'data'][u'package']
+            except KeyError:
+                base.abort(404, _(u'Dataset not found'))
+            if u'id' not in pkg_dict or u'resources' not in pkg_dict:
+                log.info(u'Attempt to view unmigrated or badly migrated dataset '
+                        '{} {}'.format(id, activity_id))
+                base.abort(404, _(u'The detail of this dataset activity is not '
+                                'available'))
+            if pkg_dict[u'id'] != current_pkg[u'id']:
+                log.info(u'Mismatch between pkg id in activity and URL {} {}'
+                        .format(pkg_dict[u'id'], current_pkg[u'id']))
+                # the activity is not for the package in the URL - don't allow
+                # misleading URLs as could be malicious
+                base.abort(404, _(u'Activity not found'))
+            # The name is used lots in the template for links, so fix it to be
+            # the current one. It's not displayed to the user anyway.
+            pkg_dict[u'name'] = current_pkg[u'name']
+
+            # Earlier versions of CKAN only stored the package table in the
+            # activity, so add a placeholder for resources, or the template
+            # will crash.
+            pkg_dict.setdefault(u'resources', [])
+
+        # if the user specified a package id, redirect to the package name
+        if data_dict['id'] == pkg_dict['id'] and \
+                data_dict['id'] != pkg_dict['name']:
+            return h.redirect_to(u'{}.read'.format(package_type),
+                                id=pkg_dict['name'],
+                                activity_id=activity_id)
+
+        # can the resources be previewed?
+        for resource in pkg_dict[u'resources']:
+            try:
+                resource_views = get_action(u'resource_view_list')(
+                    context, {u'id': resource[u'id']}                   
+                )
+                resource[u'has_views'] = len(resource_views) > 0
+            except logic.NotAuthorized:
+                resource[u'has_views'] = False
+                abort(403, _('Need to be system administrator to administer'))
+                #return base.abort(403, _(f"Not authorized to access resource views for resource id {resource[u'id']}"))
+
+        package_type = pkg_dict[u'type'] or package_type
+        _setup_template_variables(context, {u'id': id}, package_type=package_type)
+
+        template = _get_pkg_template(u'read_template', package_type)
+        try:
+            return base.render(
+                template, {
+                    u'dataset_type': package_type,
+                    u'pkg_dict': pkg_dict,
+                    u'pkg': pkg,  # NB deprecated - it is the current version of
+                                # the dataset, so ignores activity_id
+                    u'is_activity_archive': bool(activity_id),
+                }
+            )
+        except TemplateNotFound as e:
+            msg = _(
+                u"Viewing datasets of type \"{package_type}\" is "
+                u"not supported ({file_!r}).".format(
+                    package_type=package_type, file_=e.message
+                )
+            )
+            return base.abort(404, msg)
+
+        assert False, u"We should never get here"
 
     def datatype_patch(self, package_id):
         data = request.GET
@@ -943,4 +1066,3 @@ class DatasetImportController(p.toolkit.BaseController):
         config['ckan.import_row'] = ''
 
         return render('admin/clear_import_log.html')
-
