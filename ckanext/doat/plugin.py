@@ -275,11 +275,11 @@ class DoatPlugin(plugins.SingletonPlugin, DefaultTranslation, toolkit.DefaultDat
             ckan_icon='file',
             controller='ckanext.doat.controllers.popup:PopupController'
         )
-        map.connect(
-            '/dataset/{id}', 
-            action='read',
-            controller='ckanext.doat.controllers.dataset:DatasetManageController',
-        )
+        # map.connect(
+        #     '/dataset/{id}', 
+        #     action='read',
+        #     controller='ckanext.doat.controllers.dataset:DatasetManageController',
+        # )
         return map
     
     
